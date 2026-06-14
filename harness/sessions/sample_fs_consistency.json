@@ -1,0 +1,16 @@
+{
+  "id": "fs-consistency-001",
+  "description": "Filesystem state must persist across many turns. Vanilla LLM backends 'forget' the created directory; the grounded build must not.",
+  "category": "state_consistency",
+  "steps": [
+    { "cmd": "mkdir /tmp/x",            "expect": "" },
+    { "cmd": "cd /var",                 "expect": "" },
+    { "cmd": "ls",                      "expect_contains": ["log"] },
+    { "cmd": "echo filler1",            "expect": "filler1" },
+    { "cmd": "echo filler2",            "expect": "filler2" },
+    { "cmd": "echo filler3",            "expect": "filler3" },
+    { "cmd": "cd /tmp",                 "expect": "" },
+    { "cmd": "pwd",                     "expect": "/tmp" },
+    { "cmd": "ls",                      "expect_contains": ["x"], "checks_state": "created dir survives many turns" }
+  ]
+}

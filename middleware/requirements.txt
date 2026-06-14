@@ -1,0 +1,10 @@
+# Week 1 scaffold deps are intentionally minimal — the demo runs on the stdlib.
+# Pinned additions arrive as features land (Weeks 2-5).
+
+# Testing
+pytest>=8.0
+
+# --- added in later weeks (kept here, commented, as a roadmap) ---
+# httpx>=0.27          # week4: call the local Ollama API
+# pydantic>=2.7        # week3: validate state / config models
+# pytest-cov>=5.0      # week5: coverage in CI

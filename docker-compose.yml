@@ -1,0 +1,90 @@
+# State-Grounded LLM Honeypot — full self-hosted stack, one command.
+#
+# Week 1: `docker compose up --build middleware` runs the demo (proves the
+# toolchain). The cowrie + ollama services are defined here so the topology is
+# documented and ready; they come fully online as features land (Weeks 2-4).
+#
+# Model weights are NOT committed to git — they are pulled with `ollama pull`
+# at setup (see scripts/pull_model.sh).
+
+services:
+  # --- local LLM runtime ------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sglh-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama   # model cache (git-ignored, not in repo)
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- state-tracking middleware ---------------------------------------
+  middleware:
+    build:
+      context: ./middleware
+      dockerfile: Dockerfile
+    container_name: sglh-middleware
+    env_file: .env
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_started
+    # Week 1: runs the demo and exits 0. Later: long-running service.
+    restart: "no"
+
+  # --- Cowrie honeypot (fork) ------------------------------------------
+  cowrie:
+    build:
+      context: ./cowrie
+      dockerfile: Dockerfile
+    container_name: sglh-cowrie
+    env_file: .env
+    ports:
+      - "2222:2222"   # SSH
+      - "2223:2223"   # Telnet
+    depends_on:
+      - middleware
+      - ollama
+    volumes:
+      - cowrie-var:/cowrie/var   # runtime logs/data (git-ignored)
+    restart: unless-stopped
+
+  # --- admin dashboard (PLANNED — built Weeks 3-6) ----------------------
+  # Uncomment once dashboard/ contains code. Defined here so the topology is
+  # documented. Backend reads Cowrie's JSON event log (mounted read-only) and
+  # serves REST + WebSocket; frontend is the React SPA. See docs/api/dashboard-api.md
+  #
+  # dashboard-api:
+  #   build:
+  #     context: ./dashboard/backend
+  #     dockerfile: Dockerfile
+  #   container_name: sglh-dashboard-api
+  #   env_file: .env
+  #   ports:
+  #     - "8000:8000"            # FastAPI (REST + WebSocket)
+  #   volumes:
+  #     - cowrie-var:/cowrie/var:ro   # read Cowrie's JSON event log
+  #   depends_on:
+  #     - cowrie
+  #   restart: unless-stopped
+  #
+  # dashboard-web:
+  #   build:
+  #     context: ./dashboard/frontend
+  #     dockerfile: Dockerfile
+  #   container_name: sglh-dashboard-web
+  #   ports:
+  #     - "5173:80"              # React SPA (served by nginx)
+  #   depends_on:
+  #     - dashboard-api
+  #   restart: unless-stopped
+
+volumes:
+  ollama-models:
+  cowrie-var:

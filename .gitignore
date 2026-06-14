@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Environment / secrets ---
+.env
+*.local
+
+# --- Models & weights (NEVER commit — pulled via `ollama pull` at setup) ---
+*.gguf
+*.bin
+*.safetensors
+models/
+ollama/
+
+# --- Cowrie runtime data ---
+cowrie/var/
+cowrie/data/
+*.log
+dl/
+tty/
+
+# --- Harness outputs (results are regenerated; keep them out of git) ---
+harness/results/
+harness/runs/
+*.jsonl.tmp
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
