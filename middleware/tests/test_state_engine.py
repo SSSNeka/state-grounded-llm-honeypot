@@ -35,6 +35,12 @@ def test_path_normalization() -> None:
     assert eng.try_fast_path("pwd") == "/var"
 
 
+def test_echo_pwd_after_cd() -> None:
+    eng = StateEngine()
+    assert eng.try_fast_path("cd /tmp") == ""
+    assert eng.try_fast_path("echo $PWD") == "/tmp"
+
+
 def test_cd_failure_keeps_cwd_and_sets_exit_code() -> None:
     eng = StateEngine()
     out = eng.try_fast_path("cd /does-not-exist")

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import posixpath
+import re
 import shlex
 from dataclasses import dataclass
+
+_VAR_PATTERN = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,12 @@ class StateEngine:
             return self._handle_pwd(args)
         if cmd == "cd":
             return self._handle_cd(args)
+        if cmd == "export":
+            return self._handle_export(args)
+        if cmd == "unset":
+            return self._handle_unset(args)
+        if cmd == "echo":
+            return self._handle_echo(args)
         if cmd == "mkdir":
             return self._handle_mkdir(args)
         if cmd == "ls":
@@ -115,6 +124,36 @@ class StateEngine:
         self.env["PWD"] = target
         self.last_exit_code = 0
         return ""
+
+    def _handle_export(self, args: list[str]) -> str:
+        if len(args) != 1 or "=" not in args[0]:
+            self.last_exit_code = 1
+            return "export: usage: export NAME=value"
+
+        name, value = args[0].split("=", 1)
+        if not self._is_valid_var_name(name):
+            self.last_exit_code = 1
+            return f"export: `{name}`: not a valid identifier"
+
+        self.env[name] = self._substitute_vars(value)
+        self.last_exit_code = 0
+        return ""
+
+    def _handle_unset(self, args: list[str]) -> str:
+        if len(args) != 1:
+            self.last_exit_code = 1
+            return "unset: usage: unset NAME"
+        if not self._is_valid_var_name(args[0]):
+            self.last_exit_code = 1
+            return f"unset: `{args[0]}`: not a valid identifier"
+
+        self.env.pop(args[0], None)
+        self.last_exit_code = 0
+        return ""
+
+    def _handle_echo(self, args: list[str]) -> str:
+        self.last_exit_code = 0
+        return " ".join(self._substitute_vars(arg) for arg in args)
 
     def _handle_mkdir(self, args: list[str]) -> str:
         if not args:
@@ -211,6 +250,19 @@ class StateEngine:
         base = path if path.startswith("/") else posixpath.join(self.cwd, path)
         normalized = posixpath.normpath(base)
         return normalized if normalized.startswith("/") else f"/{normalized}"
+
+    def _substitute_vars(self, value: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1) or match.group(2) or ""
+            return self.env.get(name, "")
+
+        return _VAR_PATTERN.sub(replace, value)
+
+    @staticmethod
+    def _is_valid_var_name(name: str) -> bool:
+        return bool(name) and (name[0].isalpha() or name[0] == "_") and all(
+            ch.isalnum() or ch == "_" for ch in name
+        )
 
     def _add_dir(self, path: str) -> None:
         parent, name = self._split(path)
