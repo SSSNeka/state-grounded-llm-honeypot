@@ -1,18 +1,19 @@
-"""Authoritative session-state engine.
-
-WEEK 1 SCAFFOLD: this is a minimal, runnable skeleton. It models just enough
-state (cwd, a tiny virtual filesystem, environment variables, last exit code)
-to (a) prove the snapshot/grounding flow end-to-end and (b) give the team a
-stable interface to build against.
-
-The full engine — complete virtual filesystem semantics, process table, users,
-and the deterministic fast-path for the whole command set — is implemented in
-Weeks 2-3. Search for `TODO(week2)` / `TODO(week3)` markers.
-"""
+"""Authoritative session-state engine."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import posixpath
+import shlex
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class _VfsNode:
+    kind: str
+
+    @property
+    def is_dir(self) -> bool:
+        return self.kind == "dir"
 
 
 @dataclass
@@ -38,21 +39,15 @@ class StateSnapshot:
 
 
 class StateEngine:
-    """Tracks the authoritative state of one attacker session.
-
-    Deterministic commands mutate this state and can be answered directly
-    (the "fast path"), keeping the honeypot consistent and reducing LLM calls.
-    """
+    """Tracks the authoritative state of one attacker session."""
 
     def __init__(self) -> None:
-        # Minimal virtual filesystem: {absolute_dir: set(child_names)}.
-        # TODO(week2): replace with a proper inode-like VFS (files vs dirs,
-        # contents, permissions, timestamps) supporting rm -r, mv, cp, etc.
-        self._fs: dict[str, set[str]] = {"/": {"tmp", "var", "etc", "home"}}
-        for d in ("/tmp", "/var", "/etc", "/home"):
-            self._fs.setdefault(d, set())
+        self._nodes: dict[str, _VfsNode] = {"/": _VfsNode("dir")}
+        self._children: dict[str, set[str]] = {"/": set()}
+        for path in ("/tmp", "/var", "/etc", "/home", "/root"):
+            self._add_dir(path)
+
         self.cwd: str = "/root"
-        self._fs.setdefault("/root", set())
         self.env: dict[str, str] = {"HOME": "/root", "USER": "root", "PWD": "/root"}
         self.last_exit_code: int = 0
 
@@ -60,64 +55,199 @@ class StateEngine:
     def snapshot(self) -> StateSnapshot:
         return StateSnapshot(
             cwd=self.cwd,
-            files_here=sorted(self._fs.get(self.cwd, set())),
+            files_here=self._list_children(self.cwd),
             env=dict(self.env),
             last_exit_code=self.last_exit_code,
         )
 
     # --- deterministic fast-path ----------------------------------------
     def try_fast_path(self, command: str) -> str | None:
-        """Resolve a deterministic command from state, or return None.
+        """Resolve a deterministic command from state, or return None."""
+        try:
+            parts = shlex.split(command)
+        except ValueError as exc:
+            self.last_exit_code = 1
+            return f"bash: {exc}"
 
-        Returning None means "defer to the LLM". This skeleton handles a few
-        commands so the demo is meaningful; the full set lands in Weeks 2-3.
-        TODO(week3): export/echo $VAR, whoami, $?, ls <known path>, process cmds.
-        """
-        parts = command.strip().split()
         if not parts:
             self.last_exit_code = 0
             return ""
+
         cmd, args = parts[0], parts[1:]
 
         if cmd == "pwd":
-            self.last_exit_code = 0
-            return self.cwd
-
+            return self._handle_pwd(args)
         if cmd == "cd":
-            target = self._resolve(args[0]) if args else self.env["HOME"]
-            if target in self._fs:
-                self.cwd = target
-                self.env["PWD"] = target
-                self.last_exit_code = 0
-                return ""
-            self.last_exit_code = 1
-            return f"bash: cd: {args[0]}: No such file or directory"
+            return self._handle_cd(args)
+        if cmd == "mkdir":
+            return self._handle_mkdir(args)
+        if cmd == "ls":
+            return self._handle_ls(args)
+        if cmd == "rm":
+            return self._handle_rm(args)
 
-        if cmd == "mkdir" and args:
-            target = self._resolve(args[-1])
-            parent, name = self._split(target)
-            self._fs.setdefault(parent, set()).add(name)
-            self._fs.setdefault(target, set())
-            self.last_exit_code = 0
-            return ""
-
-        if cmd == "ls" and not args:
-            self.last_exit_code = 0
-            return "  ".join(sorted(self._fs.get(self.cwd, set())))
-
-        # Not a deterministic command we own yet → let the LLM handle it.
         return None
 
+    # --- command handlers ------------------------------------------------
+    def _handle_pwd(self, args: list[str]) -> str:
+        if args:
+            self.last_exit_code = 1
+            return "pwd: too many arguments"
+        self.last_exit_code = 0
+        return self.cwd
+
+    def _handle_cd(self, args: list[str]) -> str:
+        if len(args) > 1:
+            self.last_exit_code = 1
+            return "bash: cd: too many arguments"
+
+        raw_target = args[0] if args else self.env["HOME"]
+        target = self._resolve_path(raw_target)
+        node = self._nodes.get(target)
+        if node is None:
+            self.last_exit_code = 1
+            return f"bash: cd: {raw_target}: No such file or directory"
+        if not node.is_dir:
+            self.last_exit_code = 1
+            return f"bash: cd: {raw_target}: Not a directory"
+
+        self.cwd = target
+        self.env["PWD"] = target
+        self.last_exit_code = 0
+        return ""
+
+    def _handle_mkdir(self, args: list[str]) -> str:
+        if not args:
+            self.last_exit_code = 1
+            return "mkdir: missing operand"
+        if len(args) != 1 or args[0].startswith("-"):
+            self.last_exit_code = 1
+            return f"mkdir: invalid option -- '{args[0]}'"
+
+        raw_target = args[0]
+        target = self._resolve_path(raw_target)
+        if target in self._nodes:
+            self.last_exit_code = 1
+            return f"mkdir: cannot create directory '{raw_target}': File exists"
+
+        parent, name = self._split(target)
+        parent_node = self._nodes.get(parent)
+        if parent_node is None:
+            self.last_exit_code = 1
+            return (
+                f"mkdir: cannot create directory '{raw_target}': "
+                "No such file or directory"
+            )
+        if not parent_node.is_dir:
+            self.last_exit_code = 1
+            return f"mkdir: cannot create directory '{raw_target}': Not a directory"
+        if not name:
+            self.last_exit_code = 1
+            return f"mkdir: cannot create directory '{raw_target}': File exists"
+
+        self._add_dir(target)
+        self.last_exit_code = 0
+        return ""
+
+    def _handle_ls(self, args: list[str]) -> str:
+        if len(args) > 1:
+            self.last_exit_code = 1
+            return "ls: too many arguments"
+
+        raw_target = args[0] if args else self.cwd
+        target = self._resolve_path(raw_target)
+        node = self._nodes.get(target)
+        if node is None:
+            self.last_exit_code = 1
+            return f"ls: cannot access '{raw_target}': No such file or directory"
+
+        self.last_exit_code = 0
+        if node.is_dir:
+            return "  ".join(self._list_children(target))
+        return posixpath.basename(target)
+
+    def _handle_rm(self, args: list[str]) -> str:
+        if not args:
+            self.last_exit_code = 1
+            return "rm: missing operand"
+
+        recursive = False
+        targets: list[str] = []
+        for arg in args:
+            if arg == "-r" or arg == "-R":
+                recursive = True
+                continue
+            if arg.startswith("-"):
+                self.last_exit_code = 1
+                return f"rm: invalid option -- '{arg}'"
+            targets.append(arg)
+
+        if len(targets) != 1:
+            self.last_exit_code = 1
+            return "rm: missing operand"
+
+        raw_target = targets[0]
+        target = self._resolve_path(raw_target)
+        node = self._nodes.get(target)
+        if node is None:
+            self.last_exit_code = 1
+            return f"rm: cannot remove '{raw_target}': No such file or directory"
+        if target == "/":
+            self.last_exit_code = 1
+            return "rm: refusing to remove root directory '/'"
+        if self._is_ancestor(target, self.cwd):
+            self.last_exit_code = 1
+            return f"rm: cannot remove '{raw_target}': Device or resource busy"
+        if node.is_dir and not recursive:
+            self.last_exit_code = 1
+            return f"rm: cannot remove '{raw_target}': Is a directory"
+
+        self._remove_subtree(target)
+        self.last_exit_code = 0
+        return ""
+
     # --- helpers ---------------------------------------------------------
-    def _resolve(self, path: str) -> str:
-        if path.startswith("/"):
-            norm = path.rstrip("/")
-            return norm or "/"
-        joined = (self.cwd.rstrip("/") + "/" + path).rstrip("/")
-        return joined or "/"
+    def _resolve_path(self, path: str) -> str:
+        base = path if path.startswith("/") else posixpath.join(self.cwd, path)
+        normalized = posixpath.normpath(base)
+        return normalized if normalized.startswith("/") else f"/{normalized}"
+
+    def _add_dir(self, path: str) -> None:
+        parent, name = self._split(path)
+        self._nodes[path] = _VfsNode("dir")
+        self._children.setdefault(path, set())
+        if path != "/":
+            self._children.setdefault(parent, set()).add(name)
+
+    def _list_children(self, path: str) -> list[str]:
+        return sorted(self._children.get(path, set()))
+
+    def _remove_subtree(self, path: str) -> None:
+        node = self._nodes[path]
+        if node.is_dir:
+            for child in list(self._children.get(path, set())):
+                self._remove_subtree(self._join(path, child))
+            self._children.pop(path, None)
+
+        parent, name = self._split(path)
+        if path != "/":
+            self._children.get(parent, set()).discard(name)
+        self._nodes.pop(path, None)
+
+    def _is_ancestor(self, candidate: str, path: str) -> bool:
+        if candidate == path:
+            return True
+        if candidate == "/":
+            return True
+        return path.startswith(candidate + "/")
+
+    @staticmethod
+    def _join(parent: str, name: str) -> str:
+        return "/" + name if parent == "/" else f"{parent}/{name}"
 
     @staticmethod
     def _split(abspath: str) -> tuple[str, str]:
-        parent = abspath.rsplit("/", 1)[0] or "/"
-        name = abspath.rsplit("/", 1)[-1]
-        return parent, name
+        if abspath == "/":
+            return "/", ""
+        parent, name = posixpath.split(abspath)
+        return parent or "/", name
