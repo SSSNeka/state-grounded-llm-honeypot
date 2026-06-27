@@ -15,4 +15,4 @@ COPY tests/ ./tests/
 
 # Week 1: run the demo so `docker compose up middleware` proves the toolchain.
 # Later weeks: replace with the long-running middleware service entrypoint.
-CMD ["python", "-m", "state_grounded"]
+CMD ["python", "-m", "state_grounded.cowrie_bridge"]
