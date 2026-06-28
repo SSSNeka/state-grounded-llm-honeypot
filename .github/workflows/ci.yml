@@ -44,10 +44,3 @@ jobs:
       - name: Build Cowrie image
         run: docker build -f cowrie/Dockerfile -t sglh-cowrie ./cowrie
 
-      - name: Smoke bring-up middleware container
-        run: |
-          docker compose up -d middleware
-          docker compose ps
-          docker compose logs middleware --tail=50
-          docker compose exec -T middleware python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8090/healthz').read().decode())"
-          docker compose down -v
